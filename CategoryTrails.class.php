@@ -3,8 +3,10 @@ class CategoryTrails {
     public static function onOutputPageMakeCategoryLinks( &$out, $categories, &$links ) {
 
         # See OutputPage.php
-        # But probably only find pages for type 'normal' to avoid hidden (see Skin.php)
-        # The only line we need to override is the last line, to set links to have more surrounding text
+        # Keep this part from the MW core, so we only process the correct categories
+        $titles = array();
+        $foundCategories = array();
+        $normalcategories = array();
         foreach ( $categories as $category => $type ) {
             // array keys will cast numeric category names to ints, so cast back to string
             $category = (string)$category;
@@ -17,24 +19,51 @@ class CategoryTrails {
             if ( $category != $origcategory && array_key_exists( $category, $categories ) ) {
                 continue;
             }
-            $text = $wgContLang->convertHtml( $title->getText() );
+            // $text = $wgContLang->convertHtml( $title->getText() );
             $out->mCategories[] = $title->getText();
-            $out->mCategoryLinks[$type][] = Linker::link( $title, $text );
+            // $out->mCategoryLinks[$type][] = Linker::link( $title, $text );
+
+            $titles[$category] = $title;
+            $foundCategories[$category] = $type;
+            if ( $wgCategoryTrailsAllCategories || $type == 'normal' ) {
+                $normalCategories[] = $category;
+            }
+
         }
 
+        // Fetch previous and next pages for each category
+        $trail = $this->fetchNeighboringPagesMysql( $out->getTitle(), $normalCategories );
+
+        foreach ( $categories as $category => $type ) {
+            $text = $wgContLang->convertHtml( $title->getText() );
+            $thisLink = Linker::link( $title, $text );
+
+            # Only find pages for type 'normal' to avoid trails for hidden categories (see Skin.php)
+            # Unless $wgCategoryTrailsAllCategories config is set.
+            if ( $wgCategoryTrailsAllCategories || $type == 'normal' ) {
+                $prevLink = $trail['previous'][$cat] ? Linker::link( $trail['previous'][$cat]) : '';
+                $nextLink = $trail['next'    ][$cat] ? Linker::link( $trail['next'    ][$cat]) : '';
+
+                $thisLink = Html::rawElement( 'span', $prevLink, [ 'class' => 'ct-cattrail' ] )
+                          . Html::rawElement( 'span', '←',       [ 'class' => 'ct-catsep' ] )
+                          . Html::rawElement( 'span', $thisLink, [ 'class' => 'ct-cattrail' ] )
+                          . Html::rawElement( 'span', '→',       [ 'class' => 'ct-catsep' ] )
+                          . Html::rawElement( 'span', $nextLink, [ 'class' => 'ct-cattrail' ] );
+            }
+            $out->mCategoryLinks[$type][] = $thisLink;
+        }
         return true;
     }
 
-    # Another function here to register a formatting module (one cat per line)
-    # or do that via registration?
-
-
+    # Returns an array of the form
+    # $result = [  previous => [ 'cat1' => Title, 'cat2' => Title ],
+    #                  next => [ 'cat1' => Title, 'cat2' => Title ] ];
     function fetchNeighboringPages ( Title $page, $categories ) {
         if ($wgDBtype == 'mysql') {
-            return this->fetchNeighboringPagesMysql( $page, $categories );
+            return $this->fetchNeighboringPagesMysql( $page, $categories );
         }
         else {
-            return this->fetchNeighboringPagesDefaultDB( $page, $categories );
+            return $this->fetchNeighboringPagesDefaultDB( $page, $categories );
         }
     }
 
@@ -44,7 +73,7 @@ class CategoryTrails {
 
         # Get sortkey, which is how category table sorts (usually uppercase)
         $page_sortkey = Collation::singleton()->getSortKey(
-			$page->getCategorySortkey( $prefix ) );
+            $page->getCategorySortkey( $prefix ) );
 
 
         foreach ($categories as $cat_name) {
@@ -96,9 +125,9 @@ class CategoryTrails {
                 $prevpage[ $row->cl_to ] = $title;
             }
         }
-        
-        return $prevpage, $nextpage;
-            
+
+        return [ 'previous' => $prevpage, 'next' => $nextpage ];
+
     }
 
     function fetchNeighboringPagesMysql ( Title $page, $categories ) {
@@ -107,7 +136,7 @@ class CategoryTrails {
 
         # Get sortkey, which is how category table sorts (usually uppercase)
         $page_sortkey = Collation::singleton()->getSortKey(
-			$page->getCategorySortkey( $prefix ) );
+            $page->getCategorySortkey( $prefix ) );
 
         # SELECT cl_to, current_title, prev_title FROM (select @prev as previous, @prev_title as prev_title, @prev_cat as prev_cat, @prev_cat := cl_to AS cl_to, @prev := cl_sortkey as current, @prev_title := page_title as current_title from ( select @prev := null, @prev_title := null, @prev_cat := null ) as i, categorylinks as cl LEFT JOIN page ON page_id = cl_from WHERE cl_to IN ('Blaxploitation', 'Aria') ORDER BY cl_to, cl_sortkey) as foo WHERE prev_cat = cl_to AND (cl_to = 'Blaxploitation' AND ( previous = 'VAMPIRE IN BROOKLYN' OR current = 'VAMPIRE IN BROOKLYN')) OR (cl_to = 'Aria' AND 'ARIA/YMMV' IN ( previous, current ));
 
@@ -117,7 +146,8 @@ class CategoryTrails {
         # This one works on mysql only.
         #
         # OK, so the strategy here is to make a table, and then use variables to
-        # fake self right join it.  This way we only go through the table once,
+        # fake self right join it, so that each row is joined to its previous row.
+        # This way we only go through the table once,
         # and we use the index for the cl_to field to cull the herd.
         # Then we look for rows with the same sortkey as the current page in both fields,
         # because we're interested in both the row before or after.
@@ -132,7 +162,7 @@ class CategoryTrails {
             );
         }
         $outer_conditions = join( ' OR ', $conditions );
-    
+
         $db_categories = $dbr->makeList( ['cl_to' => $categories] );
 
         $res = $dbr->query(
@@ -162,8 +192,8 @@ class CategoryTrails {
             }
         }
 
-        return $prevpage, $nextpage;
-            
+        return [ 'previous' => $prevpage, 'next' => $nextpage ];
+
     }
 
 
