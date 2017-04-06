@@ -1,3 +1,4 @@
+<?php
 class CategoryTrails {
 
     public static function onOutputPageMakeCategoryLinks( &$out, $categories, &$links ) {
@@ -114,7 +115,7 @@ class CategoryTrails {
 
         $res = $dbr->query( sprintf( 'SELECT page_title, page_id, page_namespace, cl_to, d '.
             'FROM (%s) AS x LEFT JOIN page ON page_id = x.cl_from',
-            $subselect );
+            $subselect ));
 
        # Complete query looks like:
        # SELECT page_title, page_id, cl_to, d from (
@@ -129,7 +130,7 @@ class CategoryTrails {
         $prevpage = array();
         $nextpage = array();
         foreach ( $res as $row ) {
-            $title = Title::newFromRow( $row )
+            $title = Title::newFromRow( $row );
             if ( $row->d > 0 ) {
                 $nextpage[ $row->cl_to ] = $title;
             }

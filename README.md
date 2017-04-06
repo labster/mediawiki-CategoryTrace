@@ -11,4 +11,6 @@ and a similar feature at TV Tropes Wiki simply called "Indexes".
 This applies the principle of navigating through similar pages to Mediawiki
 categories. Unlike those features Pmwiki features, you can't really specify
 the order of the navigation here (consider a Scribunto module or Template for
-that).  Instead, we are automatically generating navigation inside a category.
+more complex navigation).  Instead, we are automatically generating
+navigation inside a category, using its category sortkey or
+{{DEFAULTSORTKEY}}.
