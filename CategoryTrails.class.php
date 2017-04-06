@@ -41,8 +41,8 @@ class CategoryTrails {
             # Only find pages for type 'normal' to avoid trails for hidden categories (see Skin.php)
             # Unless $wgCategoryTrailsAllCategories config is set.
             if ( $wgCategoryTrailsAllCategories || $type == 'normal' ) {
-                $prevLink = $trail['previous'][$cat] ? Linker::link( $trail['previous'][$cat]) : '';
-                $nextLink = $trail['next'    ][$cat] ? Linker::link( $trail['next'    ][$cat]) : '';
+                $prevLink = $trail['previous'][$cat] ? Linker::linkKnown( $trail['previous'][$cat]) : '';
+                $nextLink = $trail['next'    ][$cat] ? Linker::linkKnown( $trail['next'    ][$cat]) : '';
 
                 $thisLink = Html::rawElement( 'span', $prevLink, [ 'class' => 'ct-cattrail' ] )
                           . Html::rawElement( 'span', '←',       [ 'class' => 'ct-catsep' ] )
@@ -66,6 +66,18 @@ class CategoryTrails {
             return $this->fetchNeighboringPagesDefaultDB( $page, $categories );
         }
     }
+    // Note: There's probably a way to make a performant PostgreSQL version,
+    // using window functions, but I don't have a db to test.  But it would be
+    // something along the lines of:
+    // SELECT prev_title, prev_ns, next_title, next_ns, cl_to FROM (
+    //  SELECT cl_to, cl_from
+    //         LEAD( page_title ) OVER w AS prev_title, LEAD( page_ns ) OVER w AS prev_ns,
+    //         LAG(  page_title ) OVER w AS next_title, LEAD( page_ns ) OVER w AS next_ns,
+    //    FROM categorylinks
+    //       LEFT JOIN page ON cl_from = page_id
+    //   WHERE cl_to IN ( [$categories] )
+    //  WINDOW w AS (PARTITION BY cl_to ORDER BY cl_sortkey)
+    // ) AS x WHERE cl_from = [$page_id];
 
     function fetchNeighboringPagesDefaultDB ( Title $page, $categories ) {
 
@@ -134,13 +146,6 @@ class CategoryTrails {
 
         $dbr = wfgetDB( DB_SLAVE );
 
-        # Get sortkey, which is how category table sorts (usually uppercase)
-        $page_sortkey = Collation::singleton()->getSortKey(
-            $page->getCategorySortkey( $prefix ) );
-
-        # SELECT cl_to, current_title, prev_title FROM (select @prev as previous, @prev_title as prev_title, @prev_cat as prev_cat, @prev_cat := cl_to AS cl_to, @prev := cl_sortkey as current, @prev_title := page_title as current_title from ( select @prev := null, @prev_title := null, @prev_cat := null ) as i, categorylinks as cl LEFT JOIN page ON page_id = cl_from WHERE cl_to IN ('Blaxploitation', 'Aria') ORDER BY cl_to, cl_sortkey) as foo WHERE prev_cat = cl_to AND (cl_to = 'Blaxploitation' AND ( previous = 'VAMPIRE IN BROOKLYN' OR current = 'VAMPIRE IN BROOKLYN')) OR (cl_to = 'Aria' AND 'ARIA/YMMV' IN ( previous, current ));
-
-
         # I'm sorry to anyone who has to security review this, but there are not
         # a lot of ways to do this without killing the DB with tons of queries.
         # This one works on mysql only.
@@ -152,27 +157,26 @@ class CategoryTrails {
         # Then we look for rows with the same sortkey as the current page in both fields,
         # because we're interested in both the row before or after.
 
-        # Add conditions for the outer query
-        $conditions = [];
-        foreach ($categories as $cat_name) {
-            # This might give incorrect results if a page and a category have the same name
-            # and are members of the same category
-            $conditions[] = sprintf( "(cl_to = %s AND %s IN (previous, current))",
-                $dbr->addQuotes($cat_name), $dbr->addQuotes($page_sortkey)
-            );
-        }
-        $outer_conditions = join( ' OR ', $conditions );
+        // SELECT cl_to, current_title, current_ns, prev_title, prev_ns FROM (SELECT @prev_ns as prev_ns, @prev_title as prev_title, @prev_cat as prev_cat, @prev_id as prev_id, @prev_cat := cl_to AS cl_to, @prev_ns := page_namespace AS current_ns, @prev_title := page_title AS current_title, @prev_id := cl_from AS current_id FROM ( select @prev_ns := null, @prev_title := null, @prev_cat := null, @prev_id := null ) as i, categorylinks as cl LEFT JOIN page ON page_id = cl_from WHERE cl_to in ('Aria', 'Laconic') ORDER BY cl_to, cl_sortkey ) AS j WHERE prev_cat = cl_to AND (current_id = '42226' OR prev_id = 42226);
 
         $db_categories = $dbr->makeList( ['cl_to' => $categories] );
 
+        # Add conditions for the outer query
+        $outer_conditions = $dbr->makeList([
+                'current_id' => $page->getArticleID(),
+                'prev_id' => $page->getArticleID()
+            ], $dbr::LIST_OR
+        );
+
         $res = $dbr->query(
-            "SELECT cl_to, current_title, page_namespace, prev_title
+            "SELECT cl_to, current_title, current_ns, prev_title, prev_ns
                 FROM
-                (SELECT @prev as previous, @prev_title as prev_title, @prev_cat as prev_cat,
+                (SELECT @prev_ns as prev_ns, @prev_title as prev_title, @prev_cat as prev_cat, @prev_id as prev_id,
                      @prev_cat := cl_to AS cl_to,
-                     @prev := cl_sortkey as current,
-                     @prev_title := page_title as current_title
-                    FROM ( select @prev := null, @prev_title := null, @prev_cat := null ) as i,
+                     @prev_ns := page_namespace AS current_ns,
+                     @prev_title := page_title AS current_title,
+                     @prev_id := cl_from AS current_id
+                    FROM ( select @prev_ns := null, @prev_title := null, @prev_cat := null, @prev_id := null ) as i,
                         categorylinks as cl LEFT JOIN page ON page_id = cl_from
                     WHERE $db_categories
                     ORDER BY cl_to, cl_sortkey
@@ -183,9 +187,9 @@ class CategoryTrails {
         $prevpage = array();
         $nextpage = array();
         foreach ( $res as $row ) {
-            $prev_title = Title::makeTitle( $row->page_namespace, $row->prev_title );
+            $prev_title = Title::makeTitle( $row->prev_ns, $row->prev_title );
             if ( $page->equals( $prev_title ) ) {
-                $nextpage[ $row->cl_to ] = Title::makeTitle( $row->page_namespace, $row->current_title );
+                $nextpage[ $row->cl_to ] = Title::makeTitle( $row->current_ns, $row->current_title );
             }
             else {
                 $prevpage[ $row->cl_to ] = $prev_title;
